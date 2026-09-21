@@ -9,7 +9,7 @@ from dotenv import load_dotenv # اضافه شده برای امنیت
 load_dotenv() # بارگذاری کلید از فایل .env
 CSV_FILE = 'results.csv'
 # فراخوانی امن کلید (بجای نوشتنِ مستقیم در کد)
-API_KEY = os.getenv("GROQ_API_KEY") 
+groq_api_key = os.getenv("GROQ_API_KEY") 
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
