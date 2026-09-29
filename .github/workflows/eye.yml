@@ -1,0 +1,60 @@
+name: Job Research Eye Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  eye:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Install Playwright
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Run Eye Test
+        env:
+          BOT_ROLE: eye
+          SEND_SCAN_TO_BRAIN: "0"
+          BRAIN_DRY_RUN: "1"
+          SCRAPER_USE_ENV_PROXY: "0"
+          USE_PLAYWRIGHT_FALLBACK: "1"
+          PLAYWRIGHT_BROWSER_CHANNELS: "chromium"
+          SOURCE_SCAN_MODE: "all"
+          CHECK_INTERNET_BEFORE_SCAN: "0"
+          MIN_SITE_INTERVAL_SECONDS: "600"
+          MIN_DELAY_BETWEEN_SITES: "8"
+          MAX_DELAY_BETWEEN_SITES: "18"
+        run: python bot.py
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v7
+        with:
+          name: eye-test-${{ github.run_id }}
+          path: |
+            results.csv
+            results.xlsx
+            market_data.csv
+            market_summary.csv
+            market_report.json
+            public_market.json
+            brain_test_payload.json
+          if-no-files-found: ignore
+          retention-days: 7
