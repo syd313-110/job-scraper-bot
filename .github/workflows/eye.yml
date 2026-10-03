@@ -55,7 +55,7 @@ jobs:
 
           SEND_SCAN_TO_BRAIN: "1"
           BRAIN_DRY_RUN: "0"
-          BRAIN_API_URL: "https://syd313.pythonanywhere.com"
+          BRAIN_API_URL: "https://syd313.pythonanywhere.com/api/scan"
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
 
           SCRAPER_USE_ENV_PROXY: "0"
