@@ -30,9 +30,6 @@ jobs:
           python -m pip install playwright
           python -m playwright install --with-deps chromium
 
-      # This test runs BEFORE the full scrape.
-      # It verifies that the GitHub Secret is actually reaching the Brain
-      # and that the Brain can authenticate the request and reach Groq.
       - name: Test Brain authentication and Groq
         env:
           BRAIN_API_URL: "https://syd313.pythonanywhere.com"
@@ -75,27 +72,69 @@ jobs:
       - name: Run Eye
         env:
           BOT_ROLE: eye
-
           SEND_SCAN_TO_BRAIN: "1"
           BRAIN_DRY_RUN: "0"
           BRAIN_API_URL: "https://syd313.pythonanywhere.com/api/scan"
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
           BRAIN_TIMEOUT: "60"
-
-          # Eye must never need the Groq key.
-          # Groq lives only on the Brain server.
           SCRAPER_USE_ENV_PROXY: "0"
           USE_PLAYWRIGHT_FALLBACK: "1"
           PLAYWRIGHT_BROWSER_CHANNELS: "chromium"
-
           SOURCE_SCAN_MODE: "all"
           CHECK_INTERNET_BEFORE_SCAN: "0"
-
           MIN_SITE_INTERVAL_SECONDS: "600"
           MIN_DELAY_BETWEEN_SITES: "8"
           MAX_DELAY_BETWEEN_SITES: "18"
-
         run: python bot.py
+
+      - name: Drain Brain analysis queue
+        env:
+          BRAIN_API_URL: "https://syd313.pythonanywhere.com"
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          import time
+          import requests
+
+          brain_url = os.environ["BRAIN_API_URL"].rstrip("/")
+          token = os.environ.get("BRAIN_API_TOKEN", "").strip()
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Content-Type": "application/json",
+          }
+
+          max_rounds = 30
+          batch_size = 8
+
+          for round_no in range(1, max_rounds + 1):
+              r = requests.post(
+                  f"{brain_url}/api/analyze-pending",
+                  headers=headers,
+                  json={"limit": batch_size},
+                  timeout=120,
+              )
+              print(f"Analysis batch {round_no}: status={r.status_code}")
+              print("Response:", r.text)
+              r.raise_for_status()
+
+              data = r.json()
+              pending = int(data.get("pending_analysis", 0))
+              analyzed_now = int(data.get("analyzed", data.get("analyzed_now", 0)))
+
+              if pending <= 0:
+                  print("✅ تمام آگهی‌های در صف تحلیل شدند.")
+                  break
+
+              if analyzed_now <= 0:
+                  raise SystemExit(
+                      f"❌ صف تحلیل جلو نرفت؛ هنوز {pending} مورد در صف است."
+                  )
+
+              time.sleep(1)
+          else:
+              raise SystemExit("❌ سقف 30 batch تمام شد و هنوز تحلیل‌های معوق باقی مانده است.")
+          PY
 
       - name: Upload Test Results
         uses: actions/upload-artifact@v7
