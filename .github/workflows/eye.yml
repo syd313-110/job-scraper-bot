@@ -30,23 +30,46 @@ jobs:
           python -m pip install playwright
           python -m playwright install --with-deps chromium
 
-      - name: Test Brain availability
+      # This test runs BEFORE the full scrape.
+      # It verifies that the GitHub Secret is actually reaching the Brain
+      # and that the Brain can authenticate the request and reach Groq.
+      - name: Test Brain authentication and Groq
+        env:
+          BRAIN_API_URL: "https://syd313.pythonanywhere.com"
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
         run: |
           python - <<'PY'
+          import os
           import requests
 
-          url = "https://syd313.pythonanywhere.com/health"
+          brain_url = os.environ["BRAIN_API_URL"].rstrip("/")
+          token = os.environ.get("BRAIN_API_TOKEN", "").strip()
 
-          print("Testing Brain:", url)
+          if not token:
+              raise SystemExit("❌ BRAIN_API_TOKEN GitHub Secret is empty or unavailable")
 
-          r = requests.get(url, timeout=30)
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Content-Type": "application/json",
+          }
 
+          print("1) Testing Brain health ...")
+          r = requests.get(f"{brain_url}/health", timeout=30)
           print("Brain status:", r.status_code)
           print("Brain response:", r.text)
-
           r.raise_for_status()
 
-          print("✅ Brain is reachable from GitHub Actions")
+          print("2) Testing Brain authentication + Brain -> Groq ...")
+          r = requests.post(
+              f"{brain_url}/api/test-groq",
+              headers=headers,
+              timeout=90,
+          )
+          print("Auth/Groq status:", r.status_code)
+          print("Auth/Groq response:", r.text)
+          r.raise_for_status()
+
+          print("✅ Brain authentication and Brain -> Groq test passed")
           PY
 
       - name: Run Eye
@@ -57,7 +80,10 @@ jobs:
           BRAIN_DRY_RUN: "0"
           BRAIN_API_URL: "https://syd313.pythonanywhere.com/api/scan"
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+          BRAIN_TIMEOUT: "60"
 
+          # Eye must never need the Groq key.
+          # Groq lives only on the Brain server.
           SCRAPER_USE_ENV_PROXY: "0"
           USE_PLAYWRIGHT_FALLBACK: "1"
           PLAYWRIGHT_BROWSER_CHANNELS: "chromium"
