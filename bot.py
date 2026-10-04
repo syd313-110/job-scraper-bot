@@ -209,12 +209,15 @@ TARGET_SITES = [
     },
     {
         "name": "Quera", "enabled": True, "url": "https://quera.org/magnet/jobs",
+        # Quera Magnet در ساختار فعلی لینک آگهی‌ها را زیر /magnet/jobs/<slug> ارائه می‌کند.
         "card_selectors": ["article", "[class*='job-card']", "[class*='job-item']", "[class*='JobCard']", "[data-testid*='job']"],
-        "title_selectors": ["h1", "h2", "h3", "[class*='job-title']", "[class*='JobTitle']", "a[href*='/r/']", "a[href*='/careers/job/']"],
+        # اول لینک عنوان را هدف می‌گیریم؛ «ارسال رزومه» نیز ممکن است به همان URL لینک شده باشد.
+        "title_selectors": ["h2 a[href^='/magnet/jobs/']", "h3 a[href^='/magnet/jobs/']", "h1 a[href^='/magnet/jobs/']", "a[href^='/magnet/jobs/'][class*='title']", "a[href^='/magnet/jobs/']", "h1", "h2", "h3", "[class*='job-title']", "[class*='JobTitle']"],
         "company_selectors": ["[class*='company-name']", "[class*='company']", "[class*='Company']"],
         "contact_selectors": ["[class*='recruiter']", "[class*='contact']", "[class*='employer']"],
         "date_selectors": ["time", "[class*='date']", "[class*='published']", "[class*='created']"],
-        "job_url_patterns": [r"^/r/[A-Za-z0-9]+", r"^/careers/job/\d+"], "timeout": 35, "retry": 4, "detail_enrichment_limit": 3, "env_flag": "ENABLE_QUERA",
+        # slug را عمداً عمومی نگه می‌داریم تا در صورت تغییر فرمت شناسه، parser نشکند.
+        "job_url_patterns": [r"^/magnet/jobs/[^/?#]+/?$"], "timeout": 35, "retry": 4, "detail_enrichment_limit": 3, "env_flag": "ENABLE_QUERA",
     },
     {
         "name": "Karboom", "enabled": True, "url": "https://karboom.io/jobs",
@@ -550,7 +553,7 @@ def _detect_job_family(text):
 
 def _extract_skills(text):
     t = _clean_text(text).lower()
-    known = ['Python','Django','FastAPI','Flask','Java','Spring','C#','.NET','JavaScript','TypeScript','React','Vue','Angular','Node.js','PHP','Laravel','Go','Golang','Rust','SQL','PostgreSQL','MySQL','MongoDB','Redis','Docker','Kubernetes','Terraform','AWS','Azure','GCP','Git','Linux','CI/CD','DevOps','Machine Learning','Deep Learning','NLP','TensorFlow','PyTorch','Power BI','Excel','Figma','Flutter','React Native','Android','iOS','Selenium','Playwright','REST API','GraphQL']
+    known = ['Python','Django','FastAPI','Flask','Java','Spring','C#','.NET','JavaScript','TypeScript','React','Vue','Angular','Next.js','Node.js','Nestjs','PHP','Laravel','Go','Golang','Rust','SQL','PostgreSQL','MySQL','MongoDB','Redis','Docker','Kubernetes','Terraform','AWS','Azure','GCP','Git','Linux','CI/CD','DevOps','Machine Learning','Deep Learning','NLP','TensorFlow','PyTorch','Power BI','Excel','Figma','Flutter','React Native','Android','iOS','Selenium','Playwright','REST API','GraphQL','Jira','Postman','Scrum','HTML','CSS','API','WordPress','OOP','Data Structures','Design Patterns','Entity Framework Core','Containers']
     return ', '.join(skill for skill in known if skill.lower() in t)
 
 
@@ -558,9 +561,12 @@ def _extract_salary(text):
     t = _normalize_digits(_clean_text(text))
     if not t: return ''
     patterns = [
+        # بازه‌های عددی با جداکننده هزارگان؛ Quera ممکن است واحد را در انتهای بازه بیاورد.
+        r'(\d{1,3}(?:[,.٬]\d{3})+)\s*(?:تا|-|–)\s*(\d{1,3}(?:[,.٬]\d{3})+)\s*(?:تومان|تومن|ریال)',
         r'(\d+(?:[.,]\d+)?)\s*(?:تا|-|–)\s*(\d+(?:[.,]\d+)?)\s*(?:میلیون|میلیارد)\s*(?:تومان|تومن)?',
         r'(\d+(?:[.,]\d+)?)\s*(?:میلیون)\s*(?:تومان|تومن)?',
-        r'(\d{1,3}(?:[,.]\d{3})+)\s*(?:تومان|تومن|ریال)',
+        r'(\d{4,})\s*(?:تومان|تومن|ریال)',
+        r'(\d{1,3}(?:[,.٬]\d{3})+)\s*(?:تومان|تومن|ریال)',
     ]
     for pattern in patterns:
         match = re.search(pattern, t, flags=re.I)
@@ -570,7 +576,7 @@ def _extract_salary(text):
 
 def _parse_salary_range(salary_text):
     """استخراج بازه حقوق فقط وقتی واحد از متن آگهی قابل تشخیص باشد."""
-    text = _normalize_digits(_clean_text(salary_text)).replace(',', '').replace('،', '')
+    text = _normalize_digits(_clean_text(salary_text)).replace(',', '').replace('،', '').replace('٬', '')
     if not text:
         return None, None, ''
     m = re.search(r'(\d+(?:\.\d+)?)\s*(?:تا|-|–)\s*(\d+(?:\.\d+)?)\s*میلیون\s*(?:تومان|تومن)?', text, re.I)
@@ -766,7 +772,155 @@ def _extract_card_jobs(soup, site_info):
     return jobs
 
 
+def _extract_quera_jobs(soup, site_info):
+    """استخراج اختصاصی Quera Magnet.
+
+    در Quera ممکن است لینک عنوان و لینک «ارسال رزومه» هر دو به یک URL آگهی اشاره کنند.
+    بنابراین برای تشخیص مرز کارت، تعداد URLهای یکتای آگهی را می‌شماریم، نه تعداد تگ‌های <a>.
+    """
+    jobs = []
+    seen = set()
+    action_texts = {'ارسال رزومه', 'مشاهده بیشتر', 'درخواست همکاری', 'Apply'}
+
+    def is_job_anchor(anchor):
+        href = _clean_text(anchor.get('href', ''))
+        return bool(href and _matches_job_url(href, site_info))
+
+    # اولویت با لینک‌های داخل h2/h3 است چون در صفحه فعلی Quera عنوان آگهی همان‌جا قرار دارد.
+    candidate_anchors = []
+    selectors = [
+        "h2 a[href]", "h3 a[href]", "h1 a[href]",
+        "a[href*='/magnet/jobs/']",
+    ]
+    for selector in selectors:
+        try:
+            nodes = soup.select(selector)
+        except Exception:
+            nodes = []
+        for node in nodes:
+            if not is_job_anchor(node):
+                continue
+            text = _clean_text(node.get_text(' ', strip=True))
+            if not text or text in action_texts:
+                continue
+            candidate_anchors.append(node)
+        if candidate_anchors:
+            break
+
+    # حذف تکراری‌ها با حفظ اولین anchor مناسب.
+    unique_anchors = []
+    seen_candidates = set()
+    for anchor in candidate_anchors:
+        link = urljoin(site_info['url'], _clean_text(anchor.get('href', '')))
+        if not link or link in seen_candidates:
+            continue
+        seen_candidates.add(link)
+        unique_anchors.append(anchor)
+
+    for anchor in unique_anchors:
+        href = _clean_text(anchor.get('href', ''))
+        title = _clean_text(anchor.get_text(' ', strip=True))
+        link = urljoin(site_info['url'], href)
+        if not title or not _looks_like_real_job_title(title):
+            continue
+        if not _matches_job_url(link, site_info) or link in seen:
+            continue
+
+        # پیدا کردن کوچک‌ترین ancestor معقول که فقط یک URL شغلی یکتا در آن وجود دارد.
+        # این روش با وجود لینک دوم «ارسال رزومه» هم درست کار می‌کند چون همان URL تکرار شده است.
+        best = None
+        fallback = None
+        container = anchor
+        for _ in range(12):
+            parent = getattr(container, 'parent', None)
+            if parent is None:
+                break
+            try:
+                block_text = _clean_text(parent.get_text(' ', strip=True))
+            except Exception:
+                block_text = ''
+            if not block_text or title not in block_text:
+                container = parent
+                continue
+
+            try:
+                unique_job_links = set()
+                for a in parent.find_all('a', href=True):
+                    if is_job_anchor(a):
+                        unique_job_links.add(urljoin(site_info['url'], _clean_text(a.get('href', ''))))
+            except Exception:
+                unique_job_links = set()
+
+            if unique_job_links == {link}:
+                marker_count = sum(
+                    1 for marker in (
+                        'Junior', 'Mid-Level', 'Senior', 'Intern', 'Lead',
+                        'تمام‌وقت', 'تمام وقت', 'پاره‌وقت', 'پاره وقت',
+                        'پروژه‌ای', 'امکان دورکاری', 'دورکاری',
+                        'تهران', 'اصفهان', 'مشهد', 'شیراز', 'کرج', 'گرگان',
+                    ) if marker.lower() in block_text.lower()
+                )
+                candidate = (parent, len(block_text), marker_count)
+                if len(block_text) >= max(40, len(title) + 15):
+                    if fallback is None:
+                        fallback = candidate
+                    # به محض دیدن metadata معنادار، همین ancestor را به‌عنوان کارت برمی‌گزینیم.
+                    if marker_count >= 2:
+                        best = candidate
+                        break
+                if len(block_text) > 2500:
+                    break
+
+            container = parent
+
+        if best is None:
+            best = fallback
+        if best is None:
+            best = (getattr(anchor, 'parent', anchor), len(title), 0)
+
+        card = best[0]
+        block_text = _clean_text(card.get_text(' ', strip=True))[:6000]
+
+        # شرکت: ابتدا selectorهای عمومی؛ سپس لینک/متن نزدیک به کارت که آگهی یا action نیست.
+        company = _first_text(card, site_info.get('company_selectors'))
+        if not company:
+            try:
+                for other in card.find_all('a', href=True):
+                    other_text = _clean_text(other.get_text(' ', strip=True))
+                    other_href = _clean_text(other.get('href', ''))
+                    if not other_text or other is anchor:
+                        continue
+                    if other_text in action_texts or _matches_job_url(other_href, site_info):
+                        continue
+                    if 2 <= len(other_text) <= 120:
+                        company = other_text
+                        break
+            except Exception:
+                pass
+
+        # تاریخ relative در صفحه لیست ممکن است selector مشخص نداشته باشد.
+        date_text = _first_text(card, site_info.get('date_selectors'))
+        if not date_text:
+            date_match = re.search(
+                r'(امروز|دیروز|(?:[۰-۹0-9]+|یک|دو|سه|چهار|پنج|شش|هفت|هشت|نه|ده)\s+(?:روز|هفته|ماه)\s*پیش)',
+                block_text,
+                flags=re.I,
+            )
+            if date_match:
+                date_text = _clean_text(date_match.group(1))
+
+        job = _new_job_dict(site_info, title, company, link, date_text, '', block_text)
+        seen.add(link)
+        jobs.append(job)
+
+    return jobs
+
+
 def _extract_jobs_from_soup(soup, site_info):
+    if site_info.get('name') == 'Quera':
+        jobs = _extract_quera_jobs(soup, site_info)
+        if jobs:
+            return jobs
     jobs = _extract_card_jobs(soup, site_info)
     if jobs:
         return jobs
@@ -833,6 +987,19 @@ def _extract_detail_fields(soup, site_info):
     if not data: data={'Title':'','Company':'','Contact':'','Date':'','City':'','Work Mode':'','Employment Type':'','Salary':'','Skills':'','Description':''}
     for key, skey in (('Title','title_selectors'),('Company','company_selectors'),('Contact','contact_selectors'),('Date','date_selectors')):
         if not data.get(key): data[key]=_first_text(soup,site_info.get(skey))
+
+    # Quera detail page: نام شرکت به‌صورت لینک /magnet/companies/<slug> نمایش داده می‌شود.
+    if site_info.get('name') == 'Quera' and not data.get('Company'):
+        try:
+            for a in soup.find_all('a', href=True):
+                href = _clean_text(a.get('href', ''))
+                text = _clean_text(a.get_text(' ', strip=True))
+                if text and '/magnet/companies/' in href and 2 <= len(text) <= 120:
+                    data['Company'] = text
+                    break
+        except Exception:
+            pass
+
     full_text=soup.get_text(' ',strip=True); meta_map={}
     for meta in soup.find_all('meta'):
         key=_clean_text(meta.get('itemprop') or meta.get('name') or meta.get('property')); value=_clean_text(meta.get('content'))
