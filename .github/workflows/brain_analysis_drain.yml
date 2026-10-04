@@ -1,0 +1,111 @@
+name: Brain Analysis Drain
+
+on:
+  workflow_dispatch:
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Drain pending Brain analyses
+        env:
+          BRAIN_API_URL: "https://syd313.pythonanywhere.com"
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import time
+          import requests
+
+          brain_url = os.environ["BRAIN_API_URL"].rstrip("/")
+          token = os.environ.get("BRAIN_API_TOKEN", "").strip()
+          if not token:
+              raise SystemExit("BRAIN_API_TOKEN is empty")
+
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Content-Type": "application/json",
+          }
+
+          def health():
+              r = requests.get(f"{brain_url}/health", timeout=30)
+              print("Health status:", r.status_code)
+              print("Health:", r.text)
+              r.raise_for_status()
+              return r.json()
+
+          info = health()
+          pending = int(info.get("pending_analysis", 0))
+          print("Initial pending_analysis:", pending)
+
+          if pending <= 0:
+              print("✅ هیچ تحلیل معوقی باقی نمانده است.")
+              raise SystemExit(0)
+
+          batch_size = 4
+          max_rounds = 60
+          max_rate_retries = 8
+
+          for round_no in range(1, max_rounds + 1):
+              rate_retry = 0
+              while True:
+                  r = requests.post(
+                      f"{brain_url}/api/analyze-pending",
+                      headers=headers,
+                      json={"limit": batch_size},
+                      timeout=150,
+                  )
+                  print(f"Batch {round_no}: status={r.status_code}")
+                  print("Response:", r.text)
+
+                  if r.status_code == 200:
+                      data = r.json()
+                      pending = int(data.get("pending_analysis", 0))
+                      analyzed = int(data.get("analyzed", 0))
+                      print(f"Analyzed now: {analyzed} | Pending: {pending}")
+                      break
+
+                  if r.status_code == 429 or "rate_limit_exceeded" in r.text or "Rate limit reached" in r.text:
+                      rate_retry += 1
+                      if rate_retry > max_rate_retries:
+                          raise SystemExit("❌ Groq rate limit persisted after multiple retries.")
+
+                      retry_after = r.headers.get("Retry-After")
+                      wait = None
+                      if retry_after:
+                          try:
+                              wait = float(retry_after)
+                          except ValueError:
+                              wait = None
+                      if wait is None:
+                          match = re.search(r"try again in ([0-9.]+)s", r.text, flags=re.I)
+                          if match:
+                              wait = float(match.group(1))
+                      wait = max(8.0, min(wait or 15.0, 60.0)) + 2.0
+                      print(f"⏳ Groq rate limit؛ {wait:.1f} ثانیه صبر و همان batch دوباره اجرا می‌شود...")
+                      time.sleep(wait)
+                      continue
+
+                  raise SystemExit(f"❌ Brain analysis failed: HTTP {r.status_code}")
+
+              if pending <= 0:
+                  print("✅ تمام آگهی‌های معوق تحلیل شدند.")
+                  break
+
+              if analyzed <= 0:
+                  raise SystemExit(f"❌ صف جلو نرفت؛ هنوز {pending} مورد باقی است.")
+
+              time.sleep(2)
+          else:
+              raise SystemExit(f"❌ سقف batch تمام شد؛ هنوز {pending} مورد باقی است.")
+
+          final = health()
+          if int(final.get("pending_analysis", 0)) != 0:
+              raise SystemExit("❌ در پایان هنوز pending_analysis صفر نیست.")
+          print("✅ Brain analysis drain completed successfully.")
+          PY
